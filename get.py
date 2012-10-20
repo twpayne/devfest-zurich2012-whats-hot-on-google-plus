@@ -1,9 +1,11 @@
 #!/usr/bin/env python
 
-import httplib2
+import json
 import logging
 from optparse import OptionParser
+import os.path
 import sys
+import time
 
 from oauth2client.file import Storage
 from oauth2client.client import AccessTokenRefreshError
@@ -22,10 +24,11 @@ class Item(object):
 
     def __init__(self, item_json):
         self.id = item_json['id']
-        if 'geocode' in item_json:
-            self.geocode = map(float, item_json['geocode'].split())
-        else:
-            self.geocode = None
+        self.published = item_json['published']
+        self.geocode = item_json['geocode']
+
+    def insert(self, table_id, query):
+        return 'INSERT INTO %s (query, id, published, geocode) VALUES (\'%s\', \'%s\', \'%s\', \'%s\')' % (table_id, query, self.id, self.published, self.geocode)
 
     __repr__ = simplerepr
 
@@ -33,17 +36,22 @@ class Item(object):
 def main(argv):
     option_parser = OptionParser()
     option_parser.add_option('-c', '--create-table', action='store_true')
-    option_parser.add_option('-t', '--table', default='devfestzurich', metavar='TABLE')
+    option_parser.add_option('-t', '--table-name', default='devfestzurich', metavar='TABLE')
+    option_parser.add_option('--table-id', default='1O7qsDkkgaDbAArUKywHVwPxVqz4RA9P1xEAfrHU', metavar='TABLE-ID')
     option_parser.add_option('-q', '--query', metavar='QUERY')
     option_parser.add_option('-k', '--key', default='AIzaSyBfoMH8qNEQYBjLA9u0jLgs5V6o7KiAFbQ', metavar='KEY')
     option_parser.add_option('-l', '--limit', default=20, metavar='LIMIT', type=int)
-    option_parser.add_option('-f', '--fields', default='items(geocode,id),nextPageToken', metavar='FIELDS')
+    option_parser.add_option('-f', '--fields', default='items(geocode,id,published),nextPageToken', metavar='FIELDS')
     option_parser.add_option('--client-id', default='265903001164-lrjmvjnqjl2sfa13ogofm3hj2roakqkj.apps.googleusercontent.com')
     option_parser.add_option('--client-secret', default='DgdHp4OsayYhTx3kPhXTYt1W')
     option_parser.add_option('--scope', default='https://www.googleapis.com/auth/fusiontables')
+    option_parser.add_option('--log-level', default=0, type=int)
+    option_parser.add_option('--verbose', '-v', action='count', dest='log_level')
     options, args = option_parser.parse_args(argv[1:])
 
-    logging.basicConfig(level=logging.INFO)
+    logging.basicConfig(level=logging.WARN - 10 * options.log_level)
+
+    logger = logging.getLogger(os.path.basename(argv[0]))
 
     flow = OAuth2WebServerFlow(options.client_id, options.client_secret, options.scope)
     storage = Storage('credentials.dat')
@@ -51,8 +59,34 @@ def main(argv):
     if credentials is None or credentials.invalid:
         credentials = run(flow, storage)
 
-    http = httplib2.Http()
-    http = credentials.authorize(http)
+    plus_session = requests.session()
+    ft_session = requests.session(headers={'Authorization': 'OAuth ' + credentials.access_token})
+
+    if options.create_table:
+        data = {
+            'description': 'DevFest Zurich',
+            'isExportable': True,
+            'name': options.table_name,
+            'columns': [
+                {'name': 'id', 'type': 'STRING'},
+                {'name': 'published', 'type': 'DATETIME'},
+                {'name': 'query', 'type': 'STRING'},
+                {'name': 'geocode', 'type': 'LOCATION'},
+            ],
+        }
+        while True:
+            ft_response = ft_session.post('https://www.googleapis.com/fusiontables/v1/tables', data=json.dumps(data), headers={'Content-Type': 'application/json'})
+            if ft_response.status_code == 200:
+                break
+            elif ft_response.status_code == 401:
+                credentials = run(flow, storage)
+            else:
+                print repr(ft_response)
+                print repr(ft_response.content)
+                raise RuntimeError
+
+        print repr(ft_response)
+        print repr(ft_response.json)
 
     params = {
         'fields': options.fields,
@@ -60,20 +94,31 @@ def main(argv):
         'maxResults': 20,
         'query': options.query,
         }
-    results = []
-    while len(results) < options.limit:
-        response = requests.get('https://www.googleapis.com/plus/v1/activities', params=params)
-        logging.info('got %d items, %d with geocode' % (len(response.json['items']), len([item for item in response.json['items'] if 'geocode' in item])))
-        for item_json in response.json['items']:
-            if 'geocode' in item_json:
-                results.append(Item(item_json))
-        if 'nextPageToken' in response.json:
-            params['pageToken'] = response.json['nextPageToken']
+    count = 0
+    while options.limit and count < options.limit:
+        time.sleep(0.5)
+        plus_response = plus_session.get('https://www.googleapis.com/plus/v1/activities', params=params)
+        logging.info('got %d items, %d with geocode' % (len(plus_response.json['items']), len([item for item in plus_response.json['items'] if 'geocode' in item])))
+        items = [Item(item_json) for item_json in plus_response.json['items'] if 'geocode' in item_json]
+        for item in items:
+            while True:
+                time.sleep(0.5)
+                ft_response = ft_session.post('https://www.googleapis.com/fusiontables/v1/query', headers={'Content-Length': '0'}, params={'sql': item.insert(options.table_id, options.query)})
+                #print repr(ft_response)
+                #print repr(ft_response.content)
+                if ft_response.status_code == 200:
+                    break
+                elif ft_response.status_code == 401:
+                    credentials = run(flow, storage)
+                else:
+                    print repr(ft_response)
+                    print repr(ft_response.content)
+                    raise RuntimeError
+            count += len(items)
+        if 'nextPageToken' in plus_response.json:
+            params['pageToken'] = plus_response.json['nextPageToken']
         else:
             break
-
-    print repr(results)
-
 
 
 if __name__ == '__main__':
