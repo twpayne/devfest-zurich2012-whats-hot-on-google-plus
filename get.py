@@ -1,9 +1,14 @@
 #!/usr/bin/env python
 
+import httplib2
 import logging
 from optparse import OptionParser
 import sys
 
+from oauth2client.file import Storage
+from oauth2client.client import AccessTokenRefreshError
+from oauth2client.client import OAuth2WebServerFlow
+from oauth2client.tools import run
 import requests
 
 
@@ -11,7 +16,6 @@ def simplerepr(obj):
     keys = sorted(key for key in obj.__dict__.keys() if not key.startswith('_'))
     attrs = ''.join(' %s=%r' % (key, obj.__dict__[key]) for key in keys)
     return '<%s%s>' % (obj.__class__.__name__, attrs)
-
 
 
 class Item(object):
@@ -34,9 +38,21 @@ def main(argv):
     option_parser.add_option('-k', '--key', default='AIzaSyBfoMH8qNEQYBjLA9u0jLgs5V6o7KiAFbQ', metavar='KEY')
     option_parser.add_option('-l', '--limit', default=20, metavar='LIMIT', type=int)
     option_parser.add_option('-f', '--fields', default='items(geocode,id),nextPageToken', metavar='FIELDS')
+    option_parser.add_option('--client-id', default='265903001164-lrjmvjnqjl2sfa13ogofm3hj2roakqkj.apps.googleusercontent.com')
+    option_parser.add_option('--client-secret', default='DgdHp4OsayYhTx3kPhXTYt1W')
+    option_parser.add_option('--scope', default='https://www.googleapis.com/auth/fusiontables')
     options, args = option_parser.parse_args(argv[1:])
 
     logging.basicConfig(level=logging.INFO)
+
+    flow = OAuth2WebServerFlow(options.client_id, options.client_secret, options.scope)
+    storage = Storage('credentials.dat')
+    credentials = storage.get()
+    if credentials is None or credentials.invalid:
+        credentials = run(flow, storage)
+
+    http = httplib2.Http()
+    http = credentials.authorize(http)
 
     params = {
         'fields': options.fields,
