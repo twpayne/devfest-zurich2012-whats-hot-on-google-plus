@@ -49,7 +49,7 @@ def main(argv):
     option_parser.add_option('--verbose', '-v', action='count', dest='log_level')
     options, args = option_parser.parse_args(argv[1:])
 
-    logging.basicConfig(level=logging.WARN - 10 * options.log_level)
+    logging.basicConfig(format='%(asctime)s %(message)s', level=logging.WARN - 10 * options.log_level)
 
     logger = logging.getLogger(os.path.basename(argv[0]))
 
@@ -96,13 +96,12 @@ def main(argv):
         }
     count = 0
     while options.limit and count < options.limit:
-        time.sleep(0.5)
         plus_response = plus_session.get('https://www.googleapis.com/plus/v1/activities', params=params)
         logging.info('got %d items, %d with geocode' % (len(plus_response.json['items']), len([item for item in plus_response.json['items'] if 'geocode' in item])))
         items = [Item(item_json) for item_json in plus_response.json['items'] if 'geocode' in item_json]
         for item in items:
             while True:
-                time.sleep(0.5)
+                time.sleep(2)
                 ft_response = ft_session.post('https://www.googleapis.com/fusiontables/v1/query', headers={'Content-Length': '0'}, params={'sql': item.insert(options.table_id, options.query)})
                 #print repr(ft_response)
                 #print repr(ft_response.content)
@@ -123,4 +122,3 @@ def main(argv):
 
 if __name__ == '__main__':
     sys.exit(main(sys.argv))
-    
